@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Data files (too large for GitHub)
+data/raw/
+data/processed/
+*.pkl
+*.sqlite
+*.csv
+*.parquet
+
+# Model files (can be regenerated)
+models/*.pkl
+models/*.h5
+models/*.joblib
+
+# MLflow tracking
+mlruns/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# Temporary files
+notebook_examples_to_remove/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
