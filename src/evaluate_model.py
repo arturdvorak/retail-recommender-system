@@ -15,15 +15,22 @@ import sys
 # Add src to path to allow imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data_prep import START_DATE, END_DATE
+from src.data_prep import (
+    TRAIN_VAL_START, TRAIN_VAL_END,
+    TRAIN_START, TRAIN_END,
+    TEST_START, TEST_END
+)
 from src.model_training import FACTORS, REGULARIZATION, ITERATIONS
 
 # Paths to model artifacts and data.
 MODEL_PATH = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/models/als_model.pkl"
 )
-MATRICES_PATH = Path(
-    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/interaction_matrices.pkl"
+MATRICES_TUNE_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/interaction_matrices_tune.pkl"
+)
+MATRICES_FINAL_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/interaction_matrices_final.pkl"
 )
 MLFLOW_TRACKING_URI = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/mlruns"
@@ -34,15 +41,21 @@ TOP_K = 10  # number of items evaluated per user
 MAX_USERS_EVAL = 1000  # limit users for quick evaluation
 
 
-def generate_experiment_name() -> str:
+def generate_experiment_name(eval_set: str) -> str:
     """Generate a logical experiment name from configuration values.
     
     Format: startdate_enddate_factors_reg_iterations
     Example: may3_jun30_f64_r0.1_i20
     """
-    # Extract month and day from dates (e.g., "2015-05-03" -> "may3")
-    start = dt.datetime.strptime(START_DATE, "%Y-%m-%d")
-    end = dt.datetime.strptime(END_DATE, "%Y-%m-%d")
+    # Choose date range based on evaluation set
+    if eval_set == "validation":
+        # Hyperparameter tuning: use train_val dates
+        start = dt.datetime.strptime(TRAIN_VAL_START, "%Y-%m-%d")
+        end = dt.datetime.strptime(TRAIN_VAL_END, "%Y-%m-%d")
+    else:
+        # Final evaluation: use train dates
+        start = dt.datetime.strptime(TRAIN_START, "%Y-%m-%d")
+        end = dt.datetime.strptime(TRAIN_END, "%Y-%m-%d")
     
     start_str = f"{start.strftime('%b').lower()}{start.day}"  # "may3"
     end_str = f"{end.strftime('%b').lower()}{end.day}"  # "jun30"
@@ -97,15 +110,27 @@ def main() -> None:
         type=str,
         choices=["validation", "test"],
         default="validation",
-        help="Which dataset to evaluate on: 'validation' for hyperparameter tuning, 'test' for final evaluation (default: validation)",
+        help="Which dataset to evaluate on: 'validation' for hyperparameter tuning (valid), 'test' for final evaluation (default: validation)",
     )
     args = parser.parse_args()
 
-    # Stage 1: load trained model and interaction matrices.
+    # Stage 1: load trained model and interaction matrices based on evaluation set.
     model = joblib.load(MODEL_PATH)
-    matrices = joblib.load(MATRICES_PATH)
-    train_matrix = matrices["train"].tocsr().astype("float32")
-    eval_matrix = matrices[args.set].tocsr().astype("float32")
+    
+    if args.set == "validation":
+        # Hyperparameter tuning: use train_val and valid
+        matrices = joblib.load(MATRICES_TUNE_PATH)
+        train_matrix = matrices["train_val"].tocsr().astype("float32")
+        eval_matrix = matrices["validation"].tocsr().astype("float32")
+        date_start = TRAIN_VAL_START
+        date_end = TRAIN_VAL_END
+    else:
+        # Final evaluation: use train and test
+        matrices = joblib.load(MATRICES_FINAL_PATH)
+        train_matrix = matrices["train"].tocsr().astype("float32")
+        eval_matrix = matrices["test"].tocsr().astype("float32")
+        date_start = TRAIN_START
+        date_end = TRAIN_END
 
     # Stage 2: compute precision@K metric.
     eval_precision = precision_at_k(
@@ -120,15 +145,16 @@ def main() -> None:
     mlflow.set_tracking_uri(str(MLFLOW_TRACKING_URI))
     mlflow.set_experiment("ALS_Recommendation_System")
     
-    run_name = f"evaluation_{args.set}_{generate_experiment_name()}"
+    experiment_name = generate_experiment_name(args.set)
+    run_name = f"evaluation_{args.set}_{experiment_name}"
     with mlflow.start_run(run_name=run_name):
         # Log hyperparameters (same as training).
         mlflow.log_params({
             "factors": FACTORS,
             "regularization": REGULARIZATION,
             "iterations": ITERATIONS,
-            "date_window_start": START_DATE,
-            "date_window_end": END_DATE,
+            "date_window_start": date_start,
+            "date_window_end": date_end,
             "eval_set": args.set,
             "top_k": TOP_K,
         })
@@ -146,9 +172,10 @@ def main() -> None:
         })
 
     # Stage 3: Print summary of results.
-    experiment_name = generate_experiment_name()
     print(f"\n{args.set.capitalize()} Precision@{TOP_K}: {eval_precision:.4f}")
     print(f"Experiment: {experiment_name}")
+    print(f"Trained on: {'train_val' if args.set == 'validation' else 'train'}")
+    print(f"Evaluated on: {'valid' if args.set == 'validation' else 'test'}")
     print(f"Metrics logged to MLflow. View at: mlflow ui --backend-store-uri {MLFLOW_TRACKING_URI}")
 
 
