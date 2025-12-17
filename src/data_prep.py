@@ -64,16 +64,17 @@ def main() -> None:
 
     # Stage 2: split into chronological periods by date ranges.
     # HYPERPARAMETER TUNING PHASE (May 3 - July 31):
-    # 1. train_val (May 3 - June 18): Training data for all models
-    # 2. valid_warm (June 19 - July 31, cold-start removed): Validation for ALS/BPR
-    # 3. valid_cold (June 19 - July 31, cold-start only): Validation for LightFM/Explicit
-    # 4. valid_full (June 19 - July 31, ALL data): Combined validation
+    # 1. train_val (Period 1): Training data for all models
+    #    - First step: Train ALS/BPR with default hyperparameters on train_val (Period 1)
+    # 2. valid_warm (Period 2, cold-start removed): Validation for ALS/BPR
+    # 3. valid_cold (Period 2, cold-start only): Validation for LightFM/Explicit
+    # 4. valid_full (Period 2, ALL data): Combined validation
     #
     # FINAL MODEL PHASE (June 19 - Sep 18):
-    # 5. train (June 19 - July 31, ALL data): Final training data
-    # 6. test_warm (Aug 1 - Sep 18, cold-start removed): Final test for ALS/BPR
-    # 7. test_cold (Aug 1 - Sep 18, cold-start only): Final test for LightFM/Explicit
-    # 8. test_full (Aug 1 - Sep 18, ALL data): Combined test
+    # 5. train (Period 2, ALL data): Final training data
+    # 6. test_warm (Period 3, cold-start removed): Final test for ALS/BPR
+    # 7. test_cold (Period 3, cold-start only): Final test for LightFM/Explicit
+    # 8. test_full (Period 3, ALL data): Combined test
     
     # Convert date strings to date objects
     train_val_start = dt.datetime.strptime(TRAIN_VAL_START, "%Y-%m-%d").date()
