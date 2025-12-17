@@ -73,9 +73,15 @@ def get_ground_truth_items(visitorid: int, eval_set: str = "test") -> Optional[L
     Returns:
         List of item IDs user interacted with in evaluation period, or None if visitor not found
     """
-    # Load matrices and encoders
-    # For ALS/BPR, use warm splits; for LightFM, use full splits
-    # We'll try both to find the visitor
+    # Map eval_set to actual matrix key names
+    # Warm splits use: 'test_warm' or 'validation_warm'
+    # Full splits use: 'test_full' or 'validation_full'
+    matrix_key_warm = f"{eval_set}_warm"
+    matrix_key_full = f"{eval_set}_full"
+    
+    # Collect ground truth items from both warm and full splits
+    # This ensures complete ground truth for users who appear in both splits
+    ground_truth_items = []
     
     # Try warm splits first (ALS/BPR)
     try:
@@ -86,20 +92,22 @@ def get_ground_truth_items(visitorid: int, eval_set: str = "test") -> Optional[L
         
         if visitorid in visitor_encoder.classes_:
             user_index = visitor_encoder.transform([visitorid])[0]
-            eval_matrix = matrices[eval_set].tocsr()
-            
-            # Get items user interacted with in evaluation period
-            user_eval_interactions = eval_matrix[user_index]
-            actual_item_indices = user_eval_interactions.nonzero()[1]
-            
-            if len(actual_item_indices) > 0:
-                # Decode item indices back to original item IDs
-                actual_itemids = item_encoder.inverse_transform(actual_item_indices)
-                return actual_itemids.tolist()
+            # Use correct key name: test_warm or validation_warm
+            if matrix_key_warm in matrices:
+                eval_matrix = matrices[matrix_key_warm].tocsr()
+                
+                # Get items user interacted with in evaluation period
+                user_eval_interactions = eval_matrix[user_index]
+                actual_item_indices = user_eval_interactions.nonzero()[1]
+                
+                if len(actual_item_indices) > 0:
+                    # Decode item indices back to original item IDs
+                    warm_itemids = item_encoder.inverse_transform(actual_item_indices)
+                    ground_truth_items.extend(warm_itemids.tolist())
     except Exception:
         pass
     
-    # Try full splits (LightFM)
+    # Try full splits (LightFM) - combine with warm items
     try:
         matrices = joblib.load(MATRICES_FULL_PATH)
         encoders = joblib.load(ENCODERS_FULL_PATH)
@@ -108,20 +116,26 @@ def get_ground_truth_items(visitorid: int, eval_set: str = "test") -> Optional[L
         
         if visitorid in visitor_encoder.classes_:
             user_index = visitor_encoder.transform([visitorid])[0]
-            eval_matrix = matrices[eval_set].tocsr()
-            
-            # Get items user interacted with in evaluation period
-            user_eval_interactions = eval_matrix[user_index]
-            actual_item_indices = user_eval_interactions.nonzero()[1]
-            
-            if len(actual_item_indices) > 0:
-                # Decode item indices back to original item IDs
-                actual_itemids = item_encoder.inverse_transform(actual_item_indices)
-                return actual_itemids.tolist()
+            # Use correct key name: test_full or validation_full
+            if matrix_key_full in matrices:
+                eval_matrix = matrices[matrix_key_full].tocsr()
+                
+                # Get items user interacted with in evaluation period
+                user_eval_interactions = eval_matrix[user_index]
+                actual_item_indices = user_eval_interactions.nonzero()[1]
+                
+                if len(actual_item_indices) > 0:
+                    # Decode item indices back to original item IDs
+                    full_itemids = item_encoder.inverse_transform(actual_item_indices)
+                    # Add items not already in ground_truth_items (avoid duplicates)
+                    for item_id in full_itemids.tolist():
+                        if item_id not in ground_truth_items:
+                            ground_truth_items.append(item_id)
     except Exception:
         pass
     
-    return None
+    # Return combined ground truth items if any were found
+    return ground_truth_items if ground_truth_items else None
 
 
 def borda_count_combine(recommendations: Dict[str, List[int]]) -> List[tuple]:
@@ -153,8 +167,9 @@ def borda_count_combine(recommendations: Dict[str, List[int]]) -> List[tuple]:
             points = max_length - rank + 1
             item_scores[item_id] += points
     
-    # Sort items by total points (descending), then by item_id for tie-breaking
-    sorted_items = sorted(item_scores.items(), key=lambda x: (x[1], x[0]), reverse=True)
+    # Sort items by total points (descending), then by item_id for tie-breaking (ascending)
+    # Use negative score to sort descending, positive item_id to sort ascending
+    sorted_items = sorted(item_scores.items(), key=lambda x: (-x[1], x[0]))
     
     return sorted_items
 
