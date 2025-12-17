@@ -24,9 +24,14 @@ from src.model_training import (
     ALS_FACTORS, ALS_REGULARIZATION, ALS_ITERATIONS,
     BPR_FACTORS, BPR_LEARNING_RATE, BPR_REGULARIZATION, BPR_ITERATIONS,
     LIGHTFM_NO_COMPONENTS, LIGHTFM_LEARNING_RATE, LIGHTFM_LOSS, LIGHTFM_EPOCHS,
+    SVD_N_FACTORS, SVD_N_EPOCHS, SVD_LR_ALL, SVD_REG_ALL,
     BEST_HYPERPARAMETERS_PATH
 )
-from src.evaluate_utils import evaluate_precision_and_recall_at_k, evaluate_lightfm_precision_and_recall_at_k
+from src.evaluate_utils import (
+    evaluate_precision_and_recall_at_k, 
+    evaluate_lightfm_precision_and_recall_at_k,
+    evaluate_svd_precision_and_recall_at_k
+)
 
 # Paths to model artifacts and data.
 MODELS_DIR = Path(
@@ -99,7 +104,7 @@ def generate_experiment_name(eval_set: str, model_type: str, **hyperparams) -> s
 def main() -> None:
     """Load model and matrices, evaluate performance, and generate report.
     
-    Supports ALS, BPR, and LightFM models.
+    Supports ALS, BPR, LightFM, and SVD models.
     """
 
     parser = argparse.ArgumentParser(
@@ -108,9 +113,9 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["als", "bpr", "lightfm"],
+        choices=["als", "bpr", "lightfm", "svd"],
         default="als",
-        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM (default: als)",
+        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM, 'svd' for SVD (default: als)",
     )
     parser.add_argument(
         "--set",
@@ -156,11 +161,16 @@ def main() -> None:
                     learning_rate = saved_params["learning_rate"]
                     regularization = saved_params["regularization"]
                     iterations = saved_params["iterations"]
-                else:  # lightfm
+                elif args.model == "lightfm":
                     no_components = saved_params["no_components"]
                     learning_rate = saved_params["learning_rate"]
                     loss = saved_params["loss"]
                     epochs = saved_params["epochs"]
+                else:  # svd
+                    n_factors = saved_params["n_factors"]
+                    n_epochs = saved_params["n_epochs"]
+                    lr_all = saved_params["lr_all"]
+                    reg_all = saved_params["reg_all"]
             else:
                 # Model type not found in saved file, use defaults
                 print(f"Warning: No saved hyperparameters found for {args.model}. Using defaults.")
@@ -174,11 +184,16 @@ def main() -> None:
                     regularization = BPR_REGULARIZATION
                     iterations = BPR_ITERATIONS
                     learning_rate = BPR_LEARNING_RATE
-                else:  # lightfm
+                elif args.model == "lightfm":
                     no_components = LIGHTFM_NO_COMPONENTS
                     learning_rate = LIGHTFM_LEARNING_RATE
                     loss = LIGHTFM_LOSS
                     epochs = LIGHTFM_EPOCHS
+                else:  # svd
+                    n_factors = SVD_N_FACTORS
+                    n_epochs = SVD_N_EPOCHS
+                    lr_all = SVD_LR_ALL
+                    reg_all = SVD_REG_ALL
         else:
             # File doesn't exist, use defaults
             print(f"Warning: {BEST_HYPERPARAMETERS_PATH} not found. Using default hyperparameters.")
@@ -192,11 +207,16 @@ def main() -> None:
                 regularization = BPR_REGULARIZATION
                 iterations = BPR_ITERATIONS
                 learning_rate = BPR_LEARNING_RATE
-            else:  # lightfm
+            elif args.model == "lightfm":
                 no_components = LIGHTFM_NO_COMPONENTS
                 learning_rate = LIGHTFM_LEARNING_RATE
                 loss = LIGHTFM_LOSS
                 epochs = LIGHTFM_EPOCHS
+            else:  # svd
+                n_factors = SVD_N_FACTORS
+                n_epochs = SVD_N_EPOCHS
+                lr_all = SVD_LR_ALL
+                reg_all = SVD_REG_ALL
     else:
         # Use default hyperparameters
         if args.model == "als":
@@ -209,11 +229,16 @@ def main() -> None:
             regularization = BPR_REGULARIZATION
             iterations = BPR_ITERATIONS
             learning_rate = BPR_LEARNING_RATE
-        else:  # lightfm
+        elif args.model == "lightfm":
             no_components = LIGHTFM_NO_COMPONENTS
             learning_rate = LIGHTFM_LEARNING_RATE
             loss = LIGHTFM_LOSS
             epochs = LIGHTFM_EPOCHS
+        else:  # svd
+            n_factors = SVD_N_FACTORS
+            n_epochs = SVD_N_EPOCHS
+            lr_all = SVD_LR_ALL
+            reg_all = SVD_REG_ALL
 
     # Set model-specific paths based on model type
     if args.model == "als":
@@ -222,12 +247,36 @@ def main() -> None:
     elif args.model == "bpr":
         model_path = MODELS_DIR / "bpr_model.pkl"
         experiment_name = "BPR_Recommendation_System"
-    else:  # lightfm
+    elif args.model == "lightfm":
         model_path = MODELS_DIR / "lightfm_model.pkl"
         experiment_name = "LightFM_Recommendation_System"
+    else:  # svd
+        model_path = MODELS_DIR / "svd_model.pkl"
+        experiment_name = "SVD_Recommendation_System"
 
     # Stage 1: load trained model and interaction matrices based on evaluation set and model type.
-    if args.model == "lightfm":
+    if args.model == "svd":
+        # SVD: load model artifact (contains model and trainset)
+        model_artifact = joblib.load(model_path)
+        model = model_artifact["model"]
+        trainset = model_artifact["trainset"]
+        
+        # Load encoders for user/item mapping
+        if args.set == "validation":
+            encoders = joblib.load(ENCODERS_TUNE_FULL_PATH)
+            matrices = joblib.load(MATRICES_TUNE_FULL_PATH)
+            train_matrix = matrices["train_val"].tocsr()
+            eval_matrix = matrices["validation_full"].tocsr()
+            date_start = TRAIN_VAL_START
+            date_end = TRAIN_VAL_END
+        else:
+            encoders = joblib.load(ENCODERS_FINAL_FULL_PATH)
+            matrices = joblib.load(MATRICES_FINAL_FULL_PATH)
+            train_matrix = matrices["train"].tocsr()
+            eval_matrix = matrices["test_full"].tocsr()
+            date_start = TRAIN_START
+            date_end = TRAIN_END
+    elif args.model == "lightfm":
         # LightFM: load model artifact (contains model, dataset, encoders)
         model_artifact = joblib.load(model_path)
         model = model_artifact["model"]
@@ -266,7 +315,20 @@ def main() -> None:
             date_end = TRAIN_END
 
     # Stage 2: compute Precision@K and Recall@K using model-specific evaluation function.
-    if args.model == "lightfm":
+    if args.model == "svd":
+        # SVD uses Surprise's predict() method
+        visitor_encoder = encoders["visitorid"]
+        item_encoder = encoders["itemid"]
+        metrics = evaluate_svd_precision_and_recall_at_k(
+            model=model,
+            trainset=trainset,
+            eval_matrix=eval_matrix,
+            visitor_encoder=visitor_encoder,
+            item_encoder=item_encoder,
+            k=TOP_K,
+            show_progress=True,
+        )
+    elif args.model == "lightfm":
         # LightFM uses predict() method, needs Dataset object
         metrics = evaluate_lightfm_precision_and_recall_at_k(
             model=model,
@@ -302,6 +364,9 @@ def main() -> None:
             loss=loss, 
             epochs=epochs
         )
+    elif args.model == "svd":
+        # SVD uses different hyperparameter names
+        experiment_name_str = f"{args.set}_{args.model}_f{n_factors}_e{n_epochs}_lr{lr_all}_r{reg_all}"
     else:
         experiment_name_str = generate_experiment_name(
             args.set, args.model, 
@@ -320,6 +385,18 @@ def main() -> None:
                 "learning_rate": learning_rate,
                 "loss": loss,
                 "epochs": epochs,
+                "date_window_start": date_start,
+                "date_window_end": date_end,
+                "eval_set": args.set,
+                "top_k": TOP_K,
+            }
+        elif args.model == "svd":
+            params = {
+                "model_type": args.model.upper(),
+                "n_factors": n_factors,
+                "n_epochs": n_epochs,
+                "lr_all": lr_all,
+                "reg_all": reg_all,
                 "date_window_start": date_start,
                 "date_window_end": date_end,
                 "eval_set": args.set,

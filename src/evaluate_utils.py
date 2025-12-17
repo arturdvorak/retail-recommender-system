@@ -1,6 +1,7 @@
-"""Evaluation utilities for recommendation models (ALS, BPR, LightFM, etc.)."""
+"""Evaluation utilities for recommendation models (ALS, BPR, LightFM, SVD, etc.)."""
 
 import numpy as np
+from pathlib import Path
 from scipy import sparse
 from tqdm import tqdm
 
@@ -241,3 +242,218 @@ def evaluate_lightfm_precision_and_recall_at_k(
         'recall_at_k': mean_recall,
     }
 
+
+def evaluate_svd_precision_and_recall_at_k(
+    model,
+    trainset,
+    eval_matrix,
+    visitor_encoder,
+    item_encoder,
+    k=10,
+    show_progress=True,
+):
+    """Evaluate Precision@K and Recall@K for SVD model.
+    
+    SVD uses Surprise's predict() method, so we need to:
+    1. Get predictions for all items for each user
+    2. Sort by predicted rating and take top-K
+    3. Compare with ground truth
+    
+    Precision@K = (relevant items in top K) / K
+    Recall@K = (relevant items in top K) / (total relevant items)
+    
+    Args:
+        model: Trained SVD model from Surprise library
+        trainset: Surprise Trainset object (needed for predictions)
+        eval_matrix: Evaluation user-item interactions (ground truth) - sparse matrix
+        visitor_encoder: LabelEncoder for visitor IDs
+        item_encoder: LabelEncoder for item IDs
+        k: Number of top recommendations to evaluate
+        show_progress: Show progress bar if True
+    
+    Returns:
+        dict: {'precision_at_k': float, 'recall_at_k': float}
+    """
+    import pandas as pd
+    
+    # Convert to CSR format for efficient row access
+    eval_matrix = eval_matrix.tocsr()
+    
+    precisions = []
+    recalls = []
+    
+    # Get users with evaluation interactions (ground truth)
+    eval_user_indices = np.unique(eval_matrix.nonzero()[0])
+    
+    # Load rating CSV to get all items
+    ratings_path = Path(
+        "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train.csv"
+    )
+    ratings_df = pd.read_csv(ratings_path, header=None, names=['user_id', 'item_id', 'rating'])
+    all_items = ratings_df['item_id'].unique()
+    
+    user_iterator = tqdm(eval_user_indices, desc="Evaluating users") if show_progress else eval_user_indices
+    
+    for user_index in user_iterator:
+        # Get visitor ID from encoder
+        visitor_id = visitor_encoder.inverse_transform([user_index])[0]
+        
+        # Get user's evaluation interactions (ground truth)
+        user_eval_interactions = eval_matrix[user_index]
+        actual_item_indices = user_eval_interactions.nonzero()[1]
+        
+        if len(actual_item_indices) == 0:
+            continue
+        
+        # Decode actual item indices to original item IDs
+        actual_item_ids = set(item_encoder.inverse_transform(actual_item_indices))
+        
+        # Get items user has already rated (from training)
+        user_rated_items = set(ratings_df[ratings_df['user_id'] == visitor_id]['item_id'].values)
+        
+        # Get predictions for all items user hasn't rated
+        item_scores = []
+        for item_id in all_items:
+            if item_id not in user_rated_items:
+                try:
+                    prediction = model.predict(str(visitor_id), str(item_id))
+                    # Get item index for comparison with ground truth
+                    if item_id in item_encoder.classes_:
+                        item_scores.append((item_id, prediction.est))
+                except (ValueError, KeyError):
+                    # User or item not in trainset, skip
+                    continue
+        
+        # Sort by predicted rating (descending) and get top-K
+        item_scores.sort(key=lambda x: x[1], reverse=True)
+        recommended_item_ids = [item_id for item_id, _ in item_scores[:k]]
+        
+        if len(recommended_item_ids) == 0:
+            continue
+        
+        # Calculate Precision@K and Recall@K
+        recommended_set = set(recommended_item_ids)
+        hits = len(recommended_set.intersection(actual_item_ids))
+        
+        precision = hits / k if k > 0 else 0.0
+        precisions.append(precision)
+        
+        recall = hits / len(actual_item_ids) if len(actual_item_ids) > 0 else 0.0
+        recalls.append(recall)
+    
+    # Calculate averages across all users
+    mean_precision = np.mean(precisions) if precisions else 0.0
+    mean_recall = np.mean(recalls) if recalls else 0.0
+    
+    return {
+        'precision_at_k': mean_precision,
+        'recall_at_k': mean_recall,
+    }
+
+
+def evaluate_svd_precision_and_recall_at_k(
+    model,
+    trainset,
+    eval_matrix,
+    visitor_encoder,
+    item_encoder,
+    k=10,
+    show_progress=True,
+):
+    """Evaluate Precision@K and Recall@K for SVD model.
+    
+    SVD uses Surprise's predict() method, so we need to:
+    1. Get predictions for all items for each user
+    2. Sort by predicted rating and take top-K
+    3. Compare with ground truth
+    
+    Precision@K = (relevant items in top K) / K
+    Recall@K = (relevant items in top K) / (total relevant items)
+    
+    Args:
+        model: Trained SVD model from Surprise library
+        trainset: Surprise Trainset object (needed for predictions)
+        eval_matrix: Evaluation user-item interactions (ground truth) - sparse matrix
+        visitor_encoder: LabelEncoder for visitor IDs
+        item_encoder: LabelEncoder for item IDs
+        k: Number of top recommendations to evaluate
+        show_progress: Show progress bar if True
+    
+    Returns:
+        dict: {'precision_at_k': float, 'recall_at_k': float}
+    """
+    import pandas as pd
+    
+    # Convert to CSR format for efficient row access
+    eval_matrix = eval_matrix.tocsr()
+    
+    precisions = []
+    recalls = []
+    
+    # Get users with evaluation interactions (ground truth)
+    eval_user_indices = np.unique(eval_matrix.nonzero()[0])
+    
+    # Load rating CSV to get all items
+    ratings_path = Path(
+        "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train.csv"
+    )
+    ratings_df = pd.read_csv(ratings_path, header=None, names=['user_id', 'item_id', 'rating'])
+    all_items = ratings_df['item_id'].unique()
+    
+    user_iterator = tqdm(eval_user_indices, desc="Evaluating users") if show_progress else eval_user_indices
+    
+    for user_index in user_iterator:
+        # Get visitor ID from encoder
+        visitor_id = visitor_encoder.inverse_transform([user_index])[0]
+        
+        # Get user's evaluation interactions (ground truth)
+        user_eval_interactions = eval_matrix[user_index]
+        actual_item_indices = user_eval_interactions.nonzero()[1]
+        
+        if len(actual_item_indices) == 0:
+            continue
+        
+        # Decode actual item indices to original item IDs
+        actual_item_ids = set(item_encoder.inverse_transform(actual_item_indices))
+        
+        # Get items user has already rated (from training)
+        user_rated_items = set(ratings_df[ratings_df['user_id'] == visitor_id]['item_id'].values)
+        
+        # Get predictions for all items user hasn't rated
+        item_scores = []
+        for item_id in all_items:
+            if item_id not in user_rated_items:
+                try:
+                    prediction = model.predict(str(visitor_id), str(item_id))
+                    # Get item index for comparison with ground truth
+                    if item_id in item_encoder.classes_:
+                        item_scores.append((item_id, prediction.est))
+                except (ValueError, KeyError):
+                    # User or item not in trainset, skip
+                    continue
+        
+        # Sort by predicted rating (descending) and get top-K
+        item_scores.sort(key=lambda x: x[1], reverse=True)
+        recommended_item_ids = [item_id for item_id, _ in item_scores[:k]]
+        
+        if len(recommended_item_ids) == 0:
+            continue
+        
+        # Calculate Precision@K and Recall@K
+        recommended_set = set(recommended_item_ids)
+        hits = len(recommended_set.intersection(actual_item_ids))
+        
+        precision = hits / k if k > 0 else 0.0
+        precisions.append(precision)
+        
+        recall = hits / len(actual_item_ids) if len(actual_item_ids) > 0 else 0.0
+        recalls.append(recall)
+    
+    # Calculate averages across all users
+    mean_precision = np.mean(precisions) if precisions else 0.0
+    mean_recall = np.mean(recalls) if recalls else 0.0
+    
+    return {
+        'precision_at_k': mean_precision,
+        'recall_at_k': mean_recall,
+    }

@@ -1,13 +1,14 @@
-"""Train recommendation models (ALS, BPR, or LightFM) using prepared interaction matrices.
+"""Train recommendation models (ALS, BPR, LightFM, or SVD) using prepared interaction matrices or ratings.
 
 This script supports two training stages (used sequentially, not simultaneously):
 - Stage 1 (tune mode): Train on train_val for hyperparameter tuning
 - Stage 2 (final mode): Train on train for final model with best hyperparameters
 
-Supports three model types:
+Supports four model types:
 - ALS (Alternating Least Squares): Matrix factorization using alternating optimization
 - BPR (Bayesian Personalized Ranking): Optimizes for pairwise ranking using SGD
 - LightFM: Hybrid recommendation algorithm that can handle cold-start users
+- SVD (Singular Value Decomposition): Matrix factorization for explicit ratings using Surprise library
 """
 
 import argparse
@@ -21,6 +22,8 @@ from implicit.als import AlternatingLeastSquares
 from implicit.bpr import BayesianPersonalizedRanking
 from lightfm import LightFM
 from lightfm.data import Dataset
+from surprise import SVD, Dataset as SurpriseDataset
+from surprise.reader import Reader
 
 # Import configuration to log as parameters.
 import sys
@@ -53,6 +56,13 @@ ENCODERS_TUNE_FULL_PATH = Path(
 ENCODERS_FINAL_FULL_PATH = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/encoders_final_full.pkl"
 )
+# Rating CSV paths for SVD
+RATINGS_TUNE_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train_val.csv"
+)
+RATINGS_FINAL_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train.csv"
+)
 MODELS_DIR = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/models"
 )
@@ -78,6 +88,12 @@ LIGHTFM_LEARNING_RATE = 0.05  # How fast the model learns (typically 0.01-0.1)
 LIGHTFM_LOSS = 'warp'  # Loss function: 'warp' for implicit feedback (recommended)
 LIGHTFM_EPOCHS = 20  # Number of training epochs
 
+# Hyperparameters for SVD model.
+SVD_N_FACTORS = 50  # Number of latent factors
+SVD_N_EPOCHS = 20  # Number of training epochs
+SVD_LR_ALL = 0.005  # Learning rate for all parameters
+SVD_REG_ALL = 0.02  # Regularization term for all parameters
+
 
 def main() -> None:
     """Load matrices, fit model (ALS, BPR, or LightFM), and save it.
@@ -86,21 +102,22 @@ def main() -> None:
     - 'tune': Train on train_val for hyperparameter tuning
     - 'final': Train on train for final model
     
-    Supports three model types:
+    Supports four model types:
     - 'als': Alternating Least Squares
     - 'bpr': Bayesian Personalized Ranking
     - 'lightfm': LightFM hybrid recommendation algorithm
+    - 'svd': Singular Value Decomposition for explicit ratings
     """
 
     parser = argparse.ArgumentParser(
-        description="Train ALS, BPR, or LightFM model for hyperparameter tuning or final model."
+        description="Train ALS, BPR, LightFM, or SVD model for hyperparameter tuning or final model."
     )
     parser.add_argument(
         "--model",
         type=str,
-        choices=["als", "bpr", "lightfm"],
+        choices=["als", "bpr", "lightfm", "svd"],
         default="als",
-        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM (default: als)",
+        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM, 'svd' for SVD (default: als)",
     )
     parser.add_argument(
         "--mode",
@@ -142,11 +159,16 @@ def main() -> None:
                     learning_rate = saved_params["learning_rate"]
                     regularization = saved_params["regularization"]
                     iterations = saved_params["iterations"]
-                else:  # lightfm
+                elif args.model == "lightfm":
                     no_components = saved_params["no_components"]
                     learning_rate = saved_params["learning_rate"]
                     loss = saved_params["loss"]
                     epochs = saved_params["epochs"]
+                else:  # svd
+                    n_factors = saved_params["n_factors"]
+                    n_epochs = saved_params["n_epochs"]
+                    lr_all = saved_params["lr_all"]
+                    reg_all = saved_params["reg_all"]
             else:
                 # Model type not found in saved file, use defaults
                 print(f"Warning: No saved hyperparameters found for {args.model}. Using defaults.")
@@ -160,11 +182,16 @@ def main() -> None:
                     regularization = BPR_REGULARIZATION
                     iterations = BPR_ITERATIONS
                     learning_rate = BPR_LEARNING_RATE
-                else:  # lightfm
+                elif args.model == "lightfm":
                     no_components = LIGHTFM_NO_COMPONENTS
                     learning_rate = LIGHTFM_LEARNING_RATE
                     loss = LIGHTFM_LOSS
                     epochs = LIGHTFM_EPOCHS
+                else:  # svd
+                    n_factors = SVD_N_FACTORS
+                    n_epochs = SVD_N_EPOCHS
+                    lr_all = SVD_LR_ALL
+                    reg_all = SVD_REG_ALL
         else:
             # File doesn't exist, use defaults
             print(f"Warning: {BEST_HYPERPARAMETERS_PATH} not found. Using default hyperparameters.")
@@ -178,11 +205,16 @@ def main() -> None:
                 regularization = BPR_REGULARIZATION
                 iterations = BPR_ITERATIONS
                 learning_rate = BPR_LEARNING_RATE
-            else:  # lightfm
+            elif args.model == "lightfm":
                 no_components = LIGHTFM_NO_COMPONENTS
                 learning_rate = LIGHTFM_LEARNING_RATE
                 loss = LIGHTFM_LOSS
                 epochs = LIGHTFM_EPOCHS
+            else:  # svd
+                n_factors = SVD_N_FACTORS
+                n_epochs = SVD_N_EPOCHS
+                lr_all = SVD_LR_ALL
+                reg_all = SVD_REG_ALL
     else:
         # Use default hyperparameters
         if args.model == "als":
@@ -195,11 +227,16 @@ def main() -> None:
             regularization = BPR_REGULARIZATION
             iterations = BPR_ITERATIONS
             learning_rate = BPR_LEARNING_RATE
-        else:  # lightfm
+        elif args.model == "lightfm":
             no_components = LIGHTFM_NO_COMPONENTS
             learning_rate = LIGHTFM_LEARNING_RATE
             loss = LIGHTFM_LOSS
             epochs = LIGHTFM_EPOCHS
+        else:  # svd
+            n_factors = SVD_N_FACTORS
+            n_epochs = SVD_N_EPOCHS
+            lr_all = SVD_LR_ALL
+            reg_all = SVD_REG_ALL
     
     # Set model-specific paths based on model type
     if args.model == "als":
@@ -208,17 +245,32 @@ def main() -> None:
     elif args.model == "bpr":
         model_path = MODELS_DIR / "bpr_model.pkl"
         experiment_name = "BPR_Recommendation_System"
-    else:  # lightfm
+    elif args.model == "lightfm":
         model_path = MODELS_DIR / "lightfm_model.pkl"
         experiment_name = "LightFM_Recommendation_System"
+    else:  # svd
+        model_path = MODELS_DIR / "svd_model.pkl"
+        experiment_name = "SVD_Recommendation_System"
 
     # Set MLflow tracking URI to local directory.
     mlflow.set_tracking_uri(str(MLFLOW_TRACKING_URI))
     mlflow.set_experiment(experiment_name)
 
     # Stage 1: load training data based on mode and model type.
-    # LightFM uses full splits (includes cold-start), ALS/BPR use warm splits
-    if args.model == "lightfm":
+    # LightFM uses full splits (includes cold-start), ALS/BPR use warm splits, SVD uses rating CSV files
+    if args.model == "svd":
+        # SVD uses rating CSV files
+        if args.mode == "tune":
+            ratings_path = RATINGS_TUNE_PATH
+            date_start = TRAIN_VAL_START
+            date_end = TRAIN_VAL_END
+            run_name = "training_tune"
+        else:
+            ratings_path = RATINGS_FINAL_PATH
+            date_start = TRAIN_START
+            date_end = TRAIN_END
+            run_name = "training_final"
+    elif args.model == "lightfm":
         # LightFM uses full splits
         if args.mode == "tune":
             matrices = joblib.load(MATRICES_TUNE_FULL_PATH)
@@ -263,6 +315,17 @@ def main() -> None:
                 "date_window_end": date_end,
                 "mode": args.mode,
             }
+        elif args.model == "svd":
+            params = {
+                "model_type": args.model.upper(),
+                "n_factors": n_factors,
+                "n_epochs": n_epochs,
+                "lr_all": lr_all,
+                "reg_all": reg_all,
+                "date_window_start": date_start,
+                "date_window_end": date_end,
+                "mode": args.mode,
+            }
         else:
             params = {
                 "model_type": args.model.upper(),
@@ -278,7 +341,37 @@ def main() -> None:
         mlflow.log_params(params)
 
         # Stage 2: train the model on user-item data.
-        if args.model == "als":
+        if args.model == "svd":
+            # Train SVD model using Surprise library
+            # Load rating CSV file using Surprise's Dataset.load_from_file()
+            reader = Reader(line_format='user item rating', sep=',', skip_lines=0)
+            data = SurpriseDataset.load_from_file(str(ratings_path), reader=reader)
+            trainset = data.build_full_trainset()
+            
+            # Create and train SVD model
+            model = SVD(
+                n_factors=n_factors,
+                n_epochs=n_epochs,
+                lr_all=lr_all,
+                reg_all=reg_all,
+                random_state=42  # For reproducibility
+            )
+            model.fit(trainset)
+            
+            # Save model and trainset (needed for predictions)
+            model_artifact = {
+                "model": model,
+                "trainset": trainset,
+            }
+            joblib.dump(model_artifact, model_path)
+            
+            # Log training data info
+            mlflow.log_metrics({
+                "train_users": trainset.n_users,
+                "train_items": trainset.n_items,
+                "train_ratings": trainset.n_ratings,
+            })
+        elif args.model == "als":
             # Train Alternating Least Squares model
             model = AlternatingLeastSquares(
                 factors=factors,
@@ -350,8 +443,11 @@ def main() -> None:
         # Log model as artifact.
         mlflow.log_artifact(str(model_path), "model")
         
-        # Log training data info.
-        if args.model == "lightfm":
+        # Log training data info (if not already logged for SVD).
+        if args.model == "svd":
+            # Already logged above
+            pass
+        elif args.model == "lightfm":
             # For LightFM, log from the interactions matrix
             mlflow.log_metrics({
                 "train_users": train_matrix.shape[0],

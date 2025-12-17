@@ -1,4 +1,4 @@
-"""Generate recommendations for visitors using trained ALS, BPR, or LightFM models.
+"""Generate recommendations for visitors using trained ALS, BPR, LightFM, or SVD models.
 
 This script loads the trained model and encoders, then provides functions
 to get top-N item recommendations for single visitor or a list of visitors.
@@ -30,22 +30,65 @@ ENCODERS_FULL_PATH = Path(
 MATRICES_FULL_PATH = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/interaction_matrices_final_full.pkl"
 )
+# Paths for SVD (rating CSV files)
+RATINGS_TRAIN_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train.csv"
+)
 
 
 def recommend(visitorid: int, model_type: str = "als", top_n: int = 10) -> List[int]:
-    """Get top-N item recommendations for a given visitor using ALS, BPR, or LightFM model.
+    """Get top-N item recommendations for a given visitor using ALS, BPR, LightFM, or SVD model.
 
     Args:
         visitorid: Raw visitor ID from the original dataset.
-        model_type: Model type to use - 'als', 'bpr', or 'lightfm' (default: 'als').
+        model_type: Model type to use - 'als', 'bpr', 'lightfm', or 'svd' (default: 'als').
         top_n: Number of recommendations to return (default: 10).
 
     Returns:
         List of recommended item IDs (original item IDs, not encoded indices).
-        Returns empty list if visitorid is not found in training data (for ALS/BPR).
+        Returns empty list if visitorid is not found in training data (for ALS/BPR/SVD).
         For LightFM, can handle cold-start users.
     """
-    if model_type == "lightfm":
+    if model_type == "svd":
+        # SVD: load model artifact (contains model and trainset)
+        model_path = MODELS_DIR / "svd_model.pkl"
+        model_artifact = joblib.load(model_path)
+        model = model_artifact["model"]
+        trainset = model_artifact["trainset"]
+        
+        # Load rating CSV to get user-item mapping
+        ratings_df = pd.read_csv(RATINGS_TRAIN_PATH, header=None, names=['user_id', 'item_id', 'rating'])
+        
+        # Check if visitorid exists in training data
+        if visitorid not in ratings_df['user_id'].values:
+            return []
+        
+        # Get all unique items from training data
+        all_items = ratings_df['item_id'].unique()
+        
+        # Get items user has already rated
+        user_rated_items = set(ratings_df[ratings_df['user_id'] == visitorid]['item_id'].values)
+        
+        # Get predictions for all items user hasn't rated
+        item_scores = []
+        for item_id in all_items:
+            if item_id not in user_rated_items:
+                try:
+                    # Get internal user and item IDs from trainset
+                    inner_user_id = trainset.to_inner_uid(str(visitorid))
+                    inner_item_id = trainset.to_inner_iid(str(item_id))
+                    prediction = model.predict(str(visitorid), str(item_id))
+                    item_scores.append((item_id, prediction.est))
+                except (ValueError, KeyError):
+                    # User or item not in trainset, skip
+                    continue
+        
+        # Sort by predicted rating (descending) and get top-N
+        item_scores.sort(key=lambda x: x[1], reverse=True)
+        recommended_itemids = [item_id for item_id, _ in item_scores[:top_n]]
+        
+        return recommended_itemids
+    elif model_type == "lightfm":
         # LightFM: load model artifact (contains model, dataset, encoders)
         model_path = MODELS_DIR / "lightfm_model.pkl"
         model_artifact = joblib.load(model_path)
@@ -152,7 +195,7 @@ def recommend_batch(visitorids: List[int], model_type: str = "als", top_n: int =
 
     Args:
         visitorids: List of raw visitor IDs from the original dataset.
-        model_type: Model type to use - 'als', 'bpr', or 'lightfm' (default: 'als').
+        model_type: Model type to use - 'als', 'bpr', 'lightfm', or 'svd' (default: 'als').
         top_n: Number of recommendations to return per user (default: 10).
 
     Returns:
@@ -161,7 +204,43 @@ def recommend_batch(visitorids: List[int], model_type: str = "als", top_n: int =
     """
     results = {}
     
-    if model_type == "lightfm":
+    if model_type == "svd":
+        # SVD: load model artifact
+        model_path = MODELS_DIR / "svd_model.pkl"
+        model_artifact = joblib.load(model_path)
+        model = model_artifact["model"]
+        trainset = model_artifact["trainset"]
+        
+        # Load rating CSV to get user-item mapping
+        ratings_df = pd.read_csv(RATINGS_TRAIN_PATH, header=None, names=['user_id', 'item_id', 'rating'])
+        all_items = ratings_df['item_id'].unique()
+        
+        for visitorid in visitorids:
+            if visitorid not in ratings_df['user_id'].values:
+                results[visitorid] = []
+                continue
+            
+            try:
+                # Get items user has already rated
+                user_rated_items = set(ratings_df[ratings_df['user_id'] == visitorid]['item_id'].values)
+                
+                # Get predictions for all items user hasn't rated
+                item_scores = []
+                for item_id in all_items:
+                    if item_id not in user_rated_items:
+                        try:
+                            prediction = model.predict(str(visitorid), str(item_id))
+                            item_scores.append((item_id, prediction.est))
+                        except (ValueError, KeyError):
+                            continue
+                
+                # Sort by predicted rating and get top-N
+                item_scores.sort(key=lambda x: x[1], reverse=True)
+                recommended_itemids = [item_id for item_id, _ in item_scores[:top_n]]
+                results[visitorid] = recommended_itemids
+            except Exception:
+                results[visitorid] = []
+    elif model_type == "lightfm":
         # LightFM: load model artifact
         model_path = MODELS_DIR / "lightfm_model.pkl"
         model_artifact = joblib.load(model_path)
@@ -267,7 +346,7 @@ def main() -> None:
     """Get recommendations for visitor ID(s) provided via command line."""
 
     parser = argparse.ArgumentParser(
-        description="Get item recommendations for visitor(s) using trained ALS, BPR, or LightFM model."
+        description="Get item recommendations for visitor(s) using trained ALS, BPR, LightFM, or SVD model."
     )
     parser.add_argument(
         "--visitorids",
@@ -282,9 +361,9 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["als", "bpr", "lightfm"],
+        choices=["als", "bpr", "lightfm", "svd"],
         default="als",
-        help="Model type to use: 'als', 'bpr', or 'lightfm' (default: als)",
+        help="Model type to use: 'als', 'bpr', 'lightfm', or 'svd' (default: als)",
     )
     parser.add_argument(
         "--top-n",
