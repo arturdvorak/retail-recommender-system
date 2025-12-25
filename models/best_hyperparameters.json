@@ -1,0 +1,19 @@
+{
+  "als": {
+    "factors": 256,
+    "regularization": 0.01,
+    "iterations": 50
+  },
+  "bpr": {
+    "factors": 128,
+    "learning_rate": 0.1,
+    "regularization": 0.001,
+    "iterations": 200
+  },
+  "lightfm": {
+    "no_components": 32,
+    "learning_rate": 0.1,
+    "loss": "warp",
+    "epochs": 20
+  }
+}

@@ -175,34 +175,36 @@ def borda_count_combine(recommendations: Dict[str, List[int]]) -> List[tuple]:
 
 
 def combine_recommendations(visitorid: int, top_n: int = 10) -> Dict[str, List[int]]:
-    """Get recommendations from all three algorithms (ALS, BPR, LightFM).
+    """Get recommendations from all four algorithms (ALS, BPR, LightFM, SVD).
     
     Args:
         visitorid: Raw visitor ID from the original dataset.
         top_n: Number of recommendations to return from each algorithm (default: 10).
     
     Returns:
-        Dictionary with keys 'als', 'bpr', 'lightfm', each containing a list
+        Dictionary with keys 'als', 'bpr', 'lightfm', 'svd', each containing a list
         of recommended item IDs. Empty list if visitor not found.
     """
     # Get recommendations from each algorithm
     als_recs = recommend(visitorid, model_type="als", top_n=top_n)
     bpr_recs = recommend(visitorid, model_type="bpr", top_n=top_n)
     lightfm_recs = recommend(visitorid, model_type="lightfm", top_n=top_n)
+    svd_recs = recommend(visitorid, model_type="svd", top_n=top_n)
     
     return {
         "als": als_recs,
         "bpr": bpr_recs,
-        "lightfm": lightfm_recs
+        "lightfm": lightfm_recs,
+        "svd": svd_recs
     }
 
 
 def display_recommendations(visitorid: int, recommendations: Dict[str, List[int]], top_n: int = 10) -> None:
-    """Display recommendations from all three algorithms in a formatted table.
+    """Display recommendations from all four algorithms in a formatted table.
     
     Args:
         visitorid: The visitor ID being recommended for.
-        recommendations: Dictionary with 'als', 'bpr', 'lightfm' keys containing lists of item IDs.
+        recommendations: Dictionary with 'als', 'bpr', 'lightfm', 'svd' keys containing lists of item IDs.
         top_n: Number of recommendations shown (for display purposes).
     """
     print(f"\n{'='*80}")
@@ -210,10 +212,15 @@ def display_recommendations(visitorid: int, recommendations: Dict[str, List[int]
     print(f"{'='*80}\n")
     
     # Get the maximum length to handle different number of recommendations
-    max_len = max(len(recommendations["als"]), len(recommendations["bpr"]), len(recommendations["lightfm"]))
+    max_len = max(
+        len(recommendations["als"]), 
+        len(recommendations["bpr"]), 
+        len(recommendations["lightfm"]),
+        len(recommendations["svd"])
+    )
     
     # Print header
-    print(f"{'Rank':<6} {'ALS':<20} {'BPR':<20} {'LightFM':<20}")
+    print(f"{'Rank':<6} {'ALS':<18} {'BPR':<18} {'LightFM':<18} {'SVD':<18}")
     print("-" * 80)
     
     # Print recommendations row by row
@@ -224,8 +231,9 @@ def display_recommendations(visitorid: int, recommendations: Dict[str, List[int]
         als_item = recommendations["als"][i] if i < len(recommendations["als"]) else "-"
         bpr_item = recommendations["bpr"][i] if i < len(recommendations["bpr"]) else "-"
         lightfm_item = recommendations["lightfm"][i] if i < len(recommendations["lightfm"]) else "-"
+        svd_item = recommendations["svd"][i] if i < len(recommendations["svd"]) else "-"
         
-        print(f"{rank:<6} {str(als_item):<20} {str(bpr_item):<20} {str(lightfm_item):<20}")
+        print(f"{rank:<6} {str(als_item):<18} {str(bpr_item):<18} {str(lightfm_item):<18} {str(svd_item):<18}")
     
     # Print summary
     print("\n" + "-" * 80)
@@ -233,6 +241,7 @@ def display_recommendations(visitorid: int, recommendations: Dict[str, List[int]
     print(f"  ALS:      {len(recommendations['als'])} recommendations")
     print(f"  BPR:      {len(recommendations['bpr'])} recommendations")
     print(f"  LightFM:  {len(recommendations['lightfm'])} recommendations")
+    print(f"  SVD:      {len(recommendations['svd'])} recommendations")
     print(f"{'='*80}\n")
 
 
@@ -297,7 +306,7 @@ def main() -> None:
     """Get and display combined recommendations from all three algorithms."""
     
     parser = argparse.ArgumentParser(
-        description="Get recommendations from ALS, BPR, and LightFM models for comparison."
+        description="Get recommendations from ALS, BPR, LightFM, and SVD models for comparison."
     )
     parser.add_argument(
         "--visitorid",

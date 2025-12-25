@@ -1,7 +1,7 @@
 """Evaluate combined recommendations (Borda Count) on all test users.
 
 This script evaluates the combined recommendation approach by:
-1. Getting recommendations from ALS, BPR, and LightFM for all test users
+1. Getting recommendations from ALS, BPR, LightFM, and SVD for all test users
 2. Combining them using Borda Count method
 3. Calculating Precision@10 for combined recommendations
 4. Comparing with individual algorithm performance
@@ -52,7 +52,9 @@ TOP_K = 10  # number of items evaluated per user
 def evaluate_combined_precision_at_k(
     k: int = 10,
     eval_set: str = "test",
-    show_progress: bool = True
+    show_progress: bool = True,
+    max_users: Optional[int] = None,
+    random_seed: int = 42
 ) -> Dict[str, float]:
     """Evaluate Precision@K for combined recommendations and individual algorithms.
     
@@ -60,9 +62,11 @@ def evaluate_combined_precision_at_k(
         k: Number of top recommendations to evaluate (default: 10)
         eval_set: Which evaluation set to use - 'test' or 'validation' (default: 'test')
         show_progress: Show progress bar if True
+        max_users: Maximum number of users to evaluate. If None, evaluates all users (default: None)
+        random_seed: Random seed for user sampling (default: 42)
     
     Returns:
-        Dictionary with precision@k scores for combined, als, bpr, and lightfm
+        Dictionary with precision@k scores for combined, als, bpr, lightfm, and svd
     """
     # Load test matrices and encoders
     # Use warm splits for ALS/BPR, full splits for LightFM
@@ -121,11 +125,34 @@ def evaluate_combined_precision_at_k(
                 'has_full': True
             }
     
+    # Random sampling: if max_users is specified, randomly sample that many users
+    total_users_available = len(visitor_to_indices)
+    if max_users is not None and max_users < total_users_available:
+        # Set random seed for reproducibility
+        np.random.seed(random_seed)
+        # Convert to list for sampling
+        visitor_ids_list = list(visitor_to_indices.keys())
+        # Randomly sample max_users visitors
+        sampled_visitor_ids = np.random.choice(
+            visitor_ids_list, 
+            size=max_users, 
+            replace=False
+        )
+        # Create new dictionary with only sampled users
+        visitor_to_indices = {
+            visitor_id: visitor_to_indices[visitor_id] 
+            for visitor_id in sampled_visitor_ids
+        }
+        if show_progress:
+            print(f"Sampled {max_users:,} users from {total_users_available:,} available users")
+            print(f"Sampling ratio: {max_users/total_users_available*100:.1f}%")
+    
     # Lists to store precision scores
     combined_precisions = []
     als_precisions = []
     bpr_precisions = []
     lightfm_precisions = []
+    svd_precisions = []
     
     # Process each user
     user_iterator = tqdm(visitor_to_indices.items(), desc="Evaluating users") if show_progress else visitor_to_indices.items()
@@ -155,23 +182,25 @@ def evaluate_combined_precision_at_k(
         if len(ground_truth_items) == 0:
             continue  # Skip users with no ground truth
         
-        # Get recommendations from all three algorithms
+        # Get recommendations from all four algorithms
         try:
             als_recs = recommend(visitor_id, model_type="als", top_n=k)
             bpr_recs = recommend(visitor_id, model_type="bpr", top_n=k)
             lightfm_recs = recommend(visitor_id, model_type="lightfm", top_n=k)
+            svd_recs = recommend(visitor_id, model_type="svd", top_n=k)
         except Exception:
             continue  # Skip if recommendation fails
         
         # Skip if no recommendations from any algorithm
-        if not als_recs and not bpr_recs and not lightfm_recs:
+        if not als_recs and not bpr_recs and not lightfm_recs and not svd_recs:
             continue
         
         # Combine recommendations using Borda Count
         recommendations_dict = {
             "als": als_recs,
             "bpr": bpr_recs,
-            "lightfm": lightfm_recs
+            "lightfm": lightfm_recs,
+            "svd": svd_recs
         }
         combined_ranking = borda_count_combine(recommendations_dict)
         combined_item_ids = [item_id for item_id, _ in combined_ranking[:k]]
@@ -182,6 +211,7 @@ def evaluate_combined_precision_at_k(
         als_precision = calculate_precision_at_k(als_recs, ground_truth_items, k=k) if als_recs else 0.0
         bpr_precision = calculate_precision_at_k(bpr_recs, ground_truth_items, k=k) if bpr_recs else 0.0
         lightfm_precision = calculate_precision_at_k(lightfm_recs, ground_truth_items, k=k) if lightfm_recs else 0.0
+        svd_precision = calculate_precision_at_k(svd_recs, ground_truth_items, k=k) if svd_recs else 0.0
         
         # Always append all precisions to maintain consistent sample size across all algorithms
         # This ensures fair comparison - all metrics are averaged over the same set of users
@@ -189,12 +219,14 @@ def evaluate_combined_precision_at_k(
         als_precisions.append(als_precision)
         bpr_precisions.append(bpr_precision)
         lightfm_precisions.append(lightfm_precision)
+        svd_precisions.append(svd_precision)
     
     # Calculate mean precision@k across all users
     mean_combined_precision = np.mean(combined_precisions) if combined_precisions else 0.0
     mean_als_precision = np.mean(als_precisions) if als_precisions else 0.0
     mean_bpr_precision = np.mean(bpr_precisions) if bpr_precisions else 0.0
     mean_lightfm_precision = np.mean(lightfm_precisions) if lightfm_precisions else 0.0
+    mean_svd_precision = np.mean(svd_precisions) if svd_precisions else 0.0
     
     # All precision lists now have the same length (consistent sample size)
     num_users_evaluated = len(combined_precisions)
@@ -204,10 +236,13 @@ def evaluate_combined_precision_at_k(
         'als_precision_at_k': mean_als_precision,
         'bpr_precision_at_k': mean_bpr_precision,
         'lightfm_precision_at_k': mean_lightfm_precision,
+        'svd_precision_at_k': mean_svd_precision,
         'num_users_evaluated': num_users_evaluated,
+        'num_users_available': total_users_available,
         'num_users_als': num_users_evaluated,  # Same as num_users_evaluated (consistent sample size)
         'num_users_bpr': num_users_evaluated,  # Same as num_users_evaluated (consistent sample size)
         'num_users_lightfm': num_users_evaluated,  # Same as num_users_evaluated (consistent sample size)
+        'num_users_svd': num_users_evaluated,  # Same as num_users_evaluated (consistent sample size)
     }
 
 
@@ -230,19 +265,37 @@ def main() -> None:
         default=10,
         help="Number of recommendations to evaluate per user (default: 10)",
     )
+    parser.add_argument(
+        "--max-users",
+        type=int,
+        default=None,
+        help="Maximum number of users to evaluate. If not specified, evaluates all users. "
+             "Useful for faster evaluation (e.g., --max-users 10000)",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=42,
+        help="Random seed for user sampling (default: 42)",
+    )
     
     args = parser.parse_args()
     
     print(f"Evaluating combined recommendations on {args.eval_set} set...")
     print(f"Top-K: {args.top_k}")
-    print("This may take several minutes as it evaluates all users...")
+    if args.max_users:
+        print(f"Sampling: {args.max_users:,} users (random seed: {args.random_seed})")
+    else:
+        print("Evaluating all users (this may take several minutes)...")
     print()
     
     # Evaluate combined recommendations
     metrics = evaluate_combined_precision_at_k(
         k=args.top_k,
         eval_set=args.eval_set,
-        show_progress=True
+        show_progress=True,
+        max_users=args.max_users,
+        random_seed=args.random_seed
     )
     
     # Display results
@@ -250,9 +303,13 @@ def main() -> None:
     print(f"Combined Recommendations Evaluation Results ({args.eval_set.upper()} Set)")
     print("="*80)
     print(f"\nUsers evaluated: {metrics['num_users_evaluated']:,}")
+    if args.max_users and metrics['num_users_evaluated'] < metrics['num_users_available']:
+        print(f"Total users available: {metrics['num_users_available']:,}")
+        print(f"Sampling ratio: {metrics['num_users_evaluated']/metrics['num_users_available']*100:.1f}%")
     print(f"  - ALS:      {metrics['num_users_als']:,} users")
     print(f"  - BPR:      {metrics['num_users_bpr']:,} users")
     print(f"  - LightFM:  {metrics['num_users_lightfm']:,} users")
+    print(f"  - SVD:      {metrics['num_users_svd']:,} users")
     print("\n" + "-"*80)
     print("Precision@K Scores:")
     print("-"*80)
@@ -260,13 +317,15 @@ def main() -> None:
     print(f"  ALS:                    {metrics['als_precision_at_k']:.6f}")
     print(f"  BPR:                    {metrics['bpr_precision_at_k']:.6f}")
     print(f"  LightFM:                {metrics['lightfm_precision_at_k']:.6f}")
+    print(f"  SVD:                    {metrics['svd_precision_at_k']:.6f}")
     print("-"*80)
     
     # Calculate improvement over best individual algorithm
     individual_scores = [
         metrics['als_precision_at_k'],
         metrics['bpr_precision_at_k'],
-        metrics['lightfm_precision_at_k']
+        metrics['lightfm_precision_at_k'],
+        metrics['svd_precision_at_k']
     ]
     best_individual = max(individual_scores)
     improvement = metrics['combined_precision_at_k'] - best_individual
@@ -285,6 +344,8 @@ def main() -> None:
             "method": "Borda Count",
             "eval_set": args.eval_set,
             "top_k": args.top_k,
+            "max_users": args.max_users if args.max_users else "all",
+            "random_seed": args.random_seed,
             "date_window_start": TRAIN_START,
             "date_window_end": TRAIN_END,
         })
@@ -294,8 +355,10 @@ def main() -> None:
             f"{args.eval_set}_als_precision_at_k": metrics['als_precision_at_k'],
             f"{args.eval_set}_bpr_precision_at_k": metrics['bpr_precision_at_k'],
             f"{args.eval_set}_lightfm_precision_at_k": metrics['lightfm_precision_at_k'],
+            f"{args.eval_set}_svd_precision_at_k": metrics['svd_precision_at_k'],
             f"{args.eval_set}_improvement_over_best": improvement,
             "num_users_evaluated": metrics['num_users_evaluated'],
+            "num_users_available": metrics['num_users_available'],
         })
         
         print(f"\nMetrics logged to MLflow. View at: mlflow ui --backend-store-uri {MLFLOW_TRACKING_URI}")

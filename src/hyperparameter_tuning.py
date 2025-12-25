@@ -1,4 +1,4 @@
-"""Hyperparameter tuning for ALS, BPR, and LightFM models using Bayesian optimization (Optuna).
+"""Hyperparameter tuning for ALS, BPR, LightFM, and SVD models using Bayesian optimization (Optuna).
 
 This script uses Optuna to intelligently search for the best hyperparameters
 by learning from previous trials. It trains multiple model variants and
@@ -25,7 +25,14 @@ from lightfm.data import Dataset
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.data_prep import TRAIN_VAL_START, TRAIN_VAL_END
-from src.evaluate_utils import evaluate_precision_and_recall_at_k, evaluate_lightfm_precision_and_recall_at_k
+from src.evaluate_utils import (
+    evaluate_precision_and_recall_at_k, 
+    evaluate_lightfm_precision_and_recall_at_k,
+    evaluate_svd_precision_and_recall_at_k
+)
+# Import SVD model (custom Surprise-compatible implementation)
+sys.path.insert(0, str(Path(__file__).parent))
+from svd_model import SVD, Dataset as SurpriseDataset
 
 # Paths to prepared data and model artifacts
 # Warm matrices for ALS/BPR
@@ -38,6 +45,10 @@ MATRICES_TUNE_FULL_PATH = Path(
 )
 ENCODERS_TUNE_FULL_PATH = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/encoders_tune_full.pkl"
+)
+# Rating CSV file for SVD (explicit ratings)
+RATINGS_TUNE_PATH = Path(
+    "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/data/processed/ratings_train_val.csv"
 )
 MODELS_DIR = Path(
     "/Users/arturdvorak/Desktop/ML course/Notebooks/retail-recommender-system/models"
@@ -201,6 +212,59 @@ def train_and_evaluate_lightfm(trial, train_matrix, eval_matrix, dataset, encode
     return precision_at_k  # This is what we want to maximize
 
 
+def train_and_evaluate_svd(trial, trainset, eval_matrix, visitor_encoder, item_encoder, max_users=None):
+    """Train SVD model with trial hyperparameters and evaluate on validation set.
+    
+    Args:
+        trial: Optuna trial object that suggests hyperparameter values
+        trainset: Surprise Trainset object (training data)
+        eval_matrix: Validation interaction matrix (validation_full) - sparse matrix
+        visitor_encoder: LabelEncoder for visitor IDs
+        item_encoder: LabelEncoder for item IDs
+        max_users: Maximum number of users to evaluate (None = all users, faster if limited)
+    
+    Returns:
+        Precision@K score (what we want to maximize)
+    """
+    # Sample hyperparameters from search space
+    # Optuna will intelligently choose values based on previous trials
+    n_factors = trial.suggest_categorical("n_factors", [32, 64, 128, 256])
+    n_epochs = trial.suggest_categorical("n_epochs", [10, 20, 50])
+    lr_all = trial.suggest_categorical("lr_all", [0.001, 0.005, 0.01])
+    reg_all = trial.suggest_categorical("reg_all", [0.01, 0.02, 0.05])
+    
+    # Train SVD model with these hyperparameters
+    model = SVD(
+        n_factors=n_factors,
+        n_epochs=n_epochs,
+        lr_all=lr_all,
+        reg_all=reg_all,
+        random_state=42  # For reproducibility
+    )
+    model.fit(trainset)
+    
+    # Evaluate on validation set using SVD-specific evaluation
+    metrics = evaluate_svd_precision_and_recall_at_k(
+        model=model,
+        trainset=trainset,
+        eval_matrix=eval_matrix,
+        visitor_encoder=visitor_encoder,
+        item_encoder=item_encoder,
+        k=TOP_K,
+        show_progress=False,  # Disable progress bar for cleaner output during tuning
+        max_users=max_users,  # Limit users for faster evaluation during hyperparameter tuning
+        random_seed=42,
+    )
+    
+    precision_at_k = metrics["precision_at_k"]
+    recall_at_k = metrics["recall_at_k"]
+    
+    # Report metrics to Optuna (for tracking and pruning)
+    trial.set_user_attr("recall_at_k", recall_at_k)
+    
+    return precision_at_k  # This is what we want to maximize
+
+
 def objective_als(trial):
     """Objective function for ALS hyperparameter tuning.
     
@@ -296,6 +360,45 @@ def objective_lightfm(trial):
     return precision
 
 
+def objective_svd(trial, max_users=None):
+    """Objective function for SVD hyperparameter tuning.
+    
+    This function is called by Optuna for each trial. It trains a model,
+    evaluates it, and returns the metric we want to optimize.
+    
+    Args:
+        trial: Optuna trial object
+        max_users: Maximum number of users to evaluate (None = all users)
+    
+    Returns:
+        Precision@K score to maximize
+    """
+    # Load data once (they're the same for all trials)
+    if not hasattr(objective_svd, 'data_loaded'):
+        # Load rating CSV and build trainset
+        objective_svd.data = SurpriseDataset.load_from_file(str(RATINGS_TUNE_PATH))
+        objective_svd.trainset = objective_svd.data.build_full_trainset()
+        
+        # Load validation matrices and encoders
+        objective_svd.matrices = joblib.load(MATRICES_TUNE_FULL_PATH)
+        objective_svd.eval_matrix = objective_svd.matrices["validation_full"].tocsr()
+        objective_svd.encoders = joblib.load(ENCODERS_TUNE_FULL_PATH)
+        
+        objective_svd.data_loaded = True
+    
+    # Train and evaluate model with trial hyperparameters
+    precision = train_and_evaluate_svd(
+        trial,
+        objective_svd.trainset,
+        objective_svd.eval_matrix,
+        objective_svd.encoders["visitorid"],
+        objective_svd.encoders["itemid"],
+        max_users=max_users
+    )
+    
+    return precision
+
+
 def main() -> None:
     """Run hyperparameter tuning using Optuna Bayesian optimization.
     
@@ -303,20 +406,27 @@ def main() -> None:
     hyperparameters. Results are tracked in MLflow and saved to JSON file.
     """
     parser = argparse.ArgumentParser(
-        description="Tune hyperparameters for ALS, BPR, or LightFM model using Bayesian optimization."
+        description="Tune hyperparameters for ALS, BPR, LightFM, or SVD model using Bayesian optimization."
     )
     parser.add_argument(
         "--model",
         type=str,
-        choices=["als", "bpr", "lightfm"],
+        choices=["als", "bpr", "lightfm", "svd"],
         default="als",
-        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM (default: als)",
+        help="Model type: 'als' for Alternating Least Squares, 'bpr' for Bayesian Personalized Ranking, 'lightfm' for LightFM, 'svd' for SVD (default: als)",
     )
     parser.add_argument(
         "--n-trials",
         type=int,
         default=50,
         help="Number of hyperparameter combinations to try (default: 50)",
+    )
+    parser.add_argument(
+        "--max-users",
+        type=int,
+        default=None,
+        help="Maximum number of users to evaluate per trial (for SVD only, speeds up tuning). "
+             "If not specified, evaluates all users. Recommended: 5000-10000 for faster tuning.",
     )
     args = parser.parse_args()
     
@@ -329,9 +439,16 @@ def main() -> None:
     elif args.model == "bpr":
         experiment_name = "BPR_Recommendation_System"
         objective_func = objective_bpr
-    else:  # lightfm
+    elif args.model == "lightfm":
         experiment_name = "LightFM_Recommendation_System"
         objective_func = objective_lightfm
+    else:  # svd
+        experiment_name = "SVD_Recommendation_System"
+        # For SVD, create a wrapper that passes max_users parameter
+        if args.max_users:
+            objective_func = lambda trial: objective_svd(trial, max_users=args.max_users)
+        else:
+            objective_func = objective_svd
     
     # Set up MLflow tracking
     mlflow.set_tracking_uri(str(MLFLOW_TRACKING_URI))
@@ -347,6 +464,8 @@ def main() -> None:
     print(f"Starting hyperparameter tuning for {args.model.upper()} model...")
     print(f"Number of trials: {args.n_trials}")
     print(f"Optimizing: Precision@{TOP_K}")
+    if args.model == "svd" and args.max_users:
+        print(f"Max users per trial: {args.max_users:,} (for faster evaluation)")
     print("-" * 60)
     
     # Run optimization trials

@@ -29,6 +29,112 @@ TEST_START = "2015-08-01"       # Latest period: final evaluation
 TEST_END = "2015-09-18"         # End of available data
 
 
+def add_random_ratings(purchases_df: pd.DataFrame, rating_percentage: float = 0.2, random_seed: int = 42) -> pd.Series:
+    """Add realistic random ratings to a percentage of purchased products.
+    
+    Simulates post-purchase reviews where users rate products they bought.
+    Rating distribution: 60% positive (4-5 stars), 20% neutral (3 stars), 20% negative (1-2 stars)
+    
+    Args:
+        purchases_df: DataFrame containing purchase events (transaction events)
+        rating_percentage: Percentage of purchases to assign explicit ratings (default: 0.2 = 20%)
+        random_seed: Random seed for reproducibility (default: 42)
+    
+    Returns:
+        Series with explicit ratings (1-5) for selected purchases, NaN for others
+    """
+    np.random.seed(random_seed)
+    
+    # Randomly select purchases to rate
+    n_purchases = len(purchases_df)
+    n_to_rate = int(n_purchases * rating_percentage)
+    
+    # Create array of NaN (no explicit rating)
+    explicit_ratings = pd.Series([np.nan] * n_purchases, index=purchases_df.index)
+    
+    if n_to_rate > 0:
+        # Randomly select indices to rate
+        indices_to_rate = np.random.choice(purchases_df.index, size=n_to_rate, replace=False)
+        
+        # Generate ratings with realistic distribution
+        # 60% positive (4-5), 20% neutral (3), 20% negative (1-2)
+        rating_probs = [0.2, 0.2, 0.2, 0.3, 0.1]  # Probabilities for ratings 1-5
+        ratings = np.random.choice([1, 2, 3, 4, 5], size=n_to_rate, p=rating_probs)
+        
+        # Assign ratings to selected purchases
+        explicit_ratings.loc[indices_to_rate] = ratings
+    
+    return explicit_ratings
+
+
+def create_explicit_ratings(events_df: pd.DataFrame, split_name: str, random_seed: int = 42) -> pd.DataFrame:
+    """Convert events to explicit ratings with hybrid implicit+explicit approach.
+    
+    Step 1: Convert all events to base implicit ratings (view=1, addtocart=2, transaction=3)
+    Step 2: Add realistic explicit ratings to 20% of purchased products
+    
+    Args:
+        events_df: DataFrame with columns ['visitorid', 'itemid', 'event']
+        split_name: Name of the split (e.g., 'train_val', 'train', 'validation', 'test')
+        random_seed: Random seed for reproducibility (default: 42)
+    
+    Returns:
+        DataFrame with columns ['user_id', 'item_id', 'rating'] ready for Surprise
+    """
+    # Step 1: Convert events to base implicit ratings
+    event_to_rating = {
+        'view': 1,
+        'addtocart': 2,
+        'transaction': 3
+    }
+    
+    # Map events to ratings
+    events_df = events_df.copy()
+    events_df['base_rating'] = events_df['event'].map(event_to_rating)
+    
+    # Group by (visitorid, itemid) and take maximum rating (strongest signal wins)
+    ratings_df = events_df.groupby(['visitorid', 'itemid'])['base_rating'].max().reset_index()
+    ratings_df.columns = ['visitorid', 'itemid', 'rating']
+    
+    # Step 2: Identify purchased products and add explicit ratings
+    # Get all purchases (items with transaction events)
+    purchases = events_df[events_df['event'] == 'transaction'][['visitorid', 'itemid']].drop_duplicates()
+    
+    if len(purchases) > 0:
+        # Merge to find which ratings correspond to purchases
+        purchases_with_ratings = ratings_df.merge(
+            purchases, 
+            on=['visitorid', 'itemid'], 
+            how='inner',
+            indicator=True
+        )
+        
+        # Add explicit ratings to 20% of purchases
+        explicit_ratings_series = add_random_ratings(purchases_with_ratings, rating_percentage=0.2, random_seed=random_seed)
+        
+        # Update ratings: replace base rating (3) with explicit rating where available
+        purchases_with_ratings['explicit_rating'] = explicit_ratings_series
+        
+        # Create mapping: (visitorid, itemid) -> explicit_rating
+        explicit_rating_map = purchases_with_ratings[
+            purchases_with_ratings['explicit_rating'].notna()
+        ].set_index(['visitorid', 'itemid'])['explicit_rating'].to_dict()
+        
+        # Update ratings_df: use explicit rating if available, otherwise keep base rating
+        ratings_df['rating'] = ratings_df.apply(
+            lambda row: explicit_rating_map.get((row['visitorid'], row['itemid']), row['rating']),
+            axis=1
+        )
+    
+    # Rename columns for Surprise format (user_id, item_id, rating)
+    ratings_df = ratings_df.rename(columns={'visitorid': 'user_id', 'itemid': 'item_id'})
+    
+    # Ensure rating is integer (explicit ratings are 1-5, implicit are 1-3)
+    ratings_df['rating'] = ratings_df['rating'].astype(int)
+    
+    return ratings_df
+
+
 def main() -> None:
     """Load events, split chronologically by date ranges, encode ids, and persist artifacts.
     
@@ -346,6 +452,24 @@ def main() -> None:
     print(f"  test_cold: {len(test_cold):,} events, {test_cold['visitorid'].nunique():,} users, {test_cold['itemid'].nunique():,} items")
     print(f"  test_full: {len(test_full):,} events, {test_full['visitorid'].nunique():,} users, {test_full['itemid'].nunique():,} items")
     print("\nAll splits saved successfully!")
+    
+    # Stage 6: Create explicit ratings for SVD model
+    print("\n=== Creating Explicit Ratings for SVD ===")
+    
+    # Create ratings for hyperparameter tuning phase
+    train_val_ratings = create_explicit_ratings(train_val, split_name='train_val', random_seed=42)
+    train_val_ratings_path = OUTPUT_DIR / "ratings_train_val.csv"
+    train_val_ratings.to_csv(train_val_ratings_path, index=False, header=False)
+    print(f"  Created ratings_train_val.csv: {len(train_val_ratings):,} ratings")
+    
+    # Create ratings for final model phase
+    train_ratings = create_explicit_ratings(train, split_name='train', random_seed=42)
+    train_ratings_path = OUTPUT_DIR / "ratings_train.csv"
+    train_ratings.to_csv(train_ratings_path, index=False, header=False)
+    print(f"  Created ratings_train.csv: {len(train_ratings):,} ratings")
+    
+    # Note: We don't create ratings for validation/test sets as they're only used for evaluation
+    print("  Rating files saved successfully!")
 
 
 if __name__ == "__main__":

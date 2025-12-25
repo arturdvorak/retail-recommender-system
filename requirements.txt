@@ -5,3 +5,4 @@ kagglehub
 mlflow
 optuna
 lightfm
+surprise

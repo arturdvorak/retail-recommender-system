@@ -50,3 +50,9 @@ Thumbs.db
 
 # Interview preparation materials
 interview_prep/
+
+# Interview prep files (local only)
+interview_prep/
+
+# Log files
+*.log
