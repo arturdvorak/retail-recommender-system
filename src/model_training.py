@@ -22,8 +22,11 @@ from implicit.als import AlternatingLeastSquares
 from implicit.bpr import BayesianPersonalizedRanking
 from lightfm import LightFM
 from lightfm.data import Dataset
-from surprise import SVD, Dataset as SurpriseDataset
-from surprise.reader import Reader
+
+# Import custom SVD implementation (Surprise-compatible)
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from svd_model import SVD, Dataset as SurpriseDataset
 
 # Import configuration to log as parameters.
 import sys
@@ -342,10 +345,9 @@ def main() -> None:
 
         # Stage 2: train the model on user-item data.
         if args.model == "svd":
-            # Train SVD model using Surprise library
-            # Load rating CSV file using Surprise's Dataset.load_from_file()
-            reader = Reader(line_format='user item rating', sep=',', skip_lines=0)
-            data = SurpriseDataset.load_from_file(str(ratings_path), reader=reader)
+            # Train SVD model using custom implementation (Surprise-compatible)
+            # Load rating CSV file
+            data = SurpriseDataset.load_from_file(str(ratings_path))
             trainset = data.build_full_trainset()
             
             # Create and train SVD model

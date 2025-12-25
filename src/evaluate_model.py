@@ -136,6 +136,19 @@ def main() -> None:
         help="Load best hyperparameters from saved file (models/best_hyperparameters.json). "
              "If not set, uses default hyperparameters.",
     )
+    parser.add_argument(
+        "--max-users",
+        type=int,
+        default=None,
+        help="Maximum number of users to evaluate. If not specified, evaluates all users. "
+             "Useful for faster evaluation, especially for SVD (e.g., --max-users 10000)",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=42,
+        help="Random seed for user sampling (default: 42)",
+    )
     args = parser.parse_args()
 
     # Load hyperparameters: either from saved file or use defaults
@@ -327,6 +340,8 @@ def main() -> None:
             item_encoder=item_encoder,
             k=TOP_K,
             show_progress=True,
+            max_users=args.max_users,
+            random_seed=args.random_seed,
         )
     elif args.model == "lightfm":
         # LightFM uses predict() method, needs Dataset object
@@ -402,6 +417,9 @@ def main() -> None:
                 "eval_set": args.set,
                 "top_k": TOP_K,
             }
+            if args.max_users:
+                params["max_users"] = args.max_users
+                params["random_seed"] = args.random_seed
         else:
             params = {
                 "model_type": args.model.upper(),
@@ -439,8 +457,10 @@ def main() -> None:
     print(f"Model type: {args.model.upper()}")
     print(f"Trained on: {'train_val' if args.set == 'validation' else 'train'}")
     print(f"Evaluated on: {'valid' if args.set == 'validation' else 'test'}")
-    if args.model != "lightfm":
+    if args.model != "lightfm" and args.model != "svd":
         print(f"Recalculate user: {args.recalculate_user}")
+    if args.max_users:
+        print(f"Users sampled: {args.max_users:,} (random seed: {args.random_seed})")
     print(f"Metrics logged to MLflow. View at: mlflow ui --backend-store-uri {MLFLOW_TRACKING_URI}")
 
 
